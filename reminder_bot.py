@@ -140,18 +140,17 @@ async def parse_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     await update.message.reply_text("❌ I couldn't understand the reminder format.")
+async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reminders = user_reminders.get(update.effective_user.id, [])
+    if not reminders:
+        await update.message.reply_text("Você não tem lembretes salvos.")
+        return
 
+    msg = "📋 *Here are your current reminders:*"
+    for i, r in enumerate(reminders, 1):
+        msg += f"\n{i}. ⏰ {r['text']} — `{r['when'].strftime('%d/%m/%Y %H:%M')}`"
 
-async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, text, time, cron FROM reminders WHERE user_id=?",
-        (update.message.chat_id,)
-    )
-    rows = cur.fetchall()
-    conn.close()
-
+    await update.message.reply_markdown(msg)
     if not rows:
         await update.message.reply_text("You have no reminders.")
         return
