@@ -137,14 +137,13 @@ async def parse_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         except Exception:
             await update.message.reply_text("❌ Could not parse recurring reminder.")
-            return
-
+   
     await update.message.reply_text("❌ I couldn't understand the reminder format.")
 async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reminders = user_reminders.get(update.effective_user.id, [])
     if not reminders:
         await update.message.reply_text("Você não tem lembretes salvos.")
-        return
+
 
     msg = "📋 *Here are your current reminders:*"
     for i, r in enumerate(reminders, 1):
