@@ -1,144 +1,84 @@
 import os
-import sqlite3
-from datetime import datetime
 import asyncio
+from datetime import datetime
 import dateparser
-
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    MessageHandler,
-    filters,
-    CommandHandler
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.date import DateTrigger
-from apscheduler.triggers.cron import CronTrigger
+TOKEN = os.getenv("BOT_TOKEN")
 
-TOKEN = os.getenv("BOT_TOKEN", "YOUR_TOKEN_HERE")
-DB_PATH = "reminders.db"
+# Store reminders in memory
+user_reminders = {}
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        """CREATE TABLE IF NOT EXISTS reminders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            text TEXT,
-            time TEXT,
-            cron TEXT,
-            active INTEGER DEFAULT 1
-        )"""
+# Check reminders loop
+async def reminder_checker():
+    while True:
+        now = datetime.now()
+        for user_id, reminders in list(user_reminders.items()):
+            for r in reminders[:]:
+                if now >= r["when"]:
+                    try:
+                        await r["context"].bot.send_message(
+                            chat_id=user_id,
+                            text=f"⏰ *Lembrete:* {r['text']}",
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        pass
+                    reminders.remove(r)
+        await asyncio.sleep(30)
+
+
+# Start command
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "Olá! Eu sou seu bot de lembretes. ⏰\n\n"
+        "Use o comando:\n"
+        "`/lembre <quando> ; <mensagem>`\n\n"
+        "Exemplos:\n"
+        "`/lembre amanhã às 9h ; beber água`\n"
+        "`/lembre 25 de dezembro às 08:00 ; presente de natal`\n"
+        "`/listar` para ver seus lembretes.\n"
+        "`/apagar <número>` para remover um lembrete."
     )
-    conn.commit()
-    conn.close()
+
+    await update.message.reply_markdown(msg)
 
 
-async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
-    job_id = context.job.id
+# Create reminder
+async def lembre(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.replace("/lembre", "").strip()
 
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT user_id, text FROM reminders WHERE id=?", (job_id,))
-    row = cur.fetchone()
-    conn.close()
-
-    if row:
-        user_id, text = row
-        await context.bot.send_message(chat_id=user_id, text=f"🔔 Reminder: {text}")
-
-
-async def parse_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message.text.lower()
-
-    dt = dateparser.parse(msg, languages=["en"])
-    is_recurring = msg.startswith("every ")
-
-    event_text = msg
-    if "remind me to" in msg:
-        event_text = msg.split("remind me to")[-1].strip()
-    elif "remind me about" in msg:
-        event_text = msg.split("remind me about")[-1].strip()
-
-    # ONE-TIME REMINDER
-    if dt and not is_recurring:
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO reminders (user_id, text, time) VALUES (?, ?, ?)",
-            (update.message.chat_id, event_text, dt.isoformat())
-        )
-        reminder_id = cur.lastrowid
-        conn.commit()
-        conn.close()
-
-        delay = (dt - datetime.now()).total_seconds()
-        if delay < 0:
-            await update.message.reply_text("❌ That time is in the past.")
-            return
-
-        context.application.job_queue.run_once(
-            send_reminder,
-            when=delay,
-            job_id=str(reminder_id)
-        )
-
+    if ";" not in text:
         await update.message.reply_text(
-            f"✅ I'll remind you to \"{event_text}\" on {dt}."
+            "Formato inválido.\nUse: /lembre <quando> ; <mensagem>"
         )
         return
 
-    # RECURRING REMINDER
-    if is_recurring:
-        try:
-            parts = msg.replace("every", "").strip().split(" ")
-            weekday = parts[0]
-            time_str = parts[-1]
+    when_text, reminder_text = map(str.strip, text.split(";", 1))
+    when = dateparser.parse(when_text, languages=["pt"])
 
-            hour, minute = map(int, time_str.split(":"))
+    if not when:
+        await update.message.reply_text("Não consegui entender a data. Tente outro formato.")
+        return
 
-            days_map = {
-                "monday": 0,
-                "tuesday": 1,
-                "wednesday": 2,
-                "thursday": 3,
-                "friday": 4,
-                "saturday": 5,
-                "sunday": 6
-            }
+    user_id = update.effective_user.id
+    if user_id not in user_reminders:
+        user_reminders[user_id] = []
 
-            if weekday not in days_map:
-                raise ValueError("Invalid weekday")
+    user_reminders[user_id].append({
+        "when": when,
+        "text": reminder_text,
+        "context": context
+    })
 
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO reminders (user_id, text, cron) VALUES (?, ?, ?)",
-                (update.message.chat_id, event_text, f"{minute} {hour} * * {days_map[weekday]}")
-            )
-            reminder_id = cur.lastrowid
-            conn.commit()
-            conn.close()
+    await update.message.reply_text(
+        f"⏰ Lembrete salvo!\n\n*Quando:* {when.strftime('%d/%m/%Y %H:%M')}\n*Mensagem:* {reminder_text}",
+        parse_mode="Markdown"
+    )
 
-            context.application.job_queue.run_daily(
-                send_reminder,
-                time=datetime.strptime(time_str, "%H:%M").time(),
-                days=[days_map[weekday]],
-                job_id=str(reminder_id)
-            )
 
-            await update.message.reply_text(
-                f"🔄 Recurring reminder set: \"{event_text}\" every {weekday} at {time_str}."
-            )
-            return
-
-        except Exception:
-            await update.message.reply_text("❌ Could not parse recurring reminder.")
-   
-    # List reminders
+# List reminders
 async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reminders = user_reminders.get(update.effective_user.id, [])
     if not reminders:
@@ -151,59 +91,36 @@ async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_markdown(msg)
 
-        return
 
-    msg = "📋 *Your reminders:*\n\n"
-    for r in rows:
-        rid, text, t, c = r
-        if t:
-            msg += f"{rid}. {text} — ⏰ {t}\n"
-        else:
-            msg += f"{rid}. {text} — 🔄 {c}\n"
-
-    await update.message.reply_text(msg)
-
-
-async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage: /cancel <id>")
-        return
-
-    rid = context.args[0]
-
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("DELETE FROM reminders WHERE id=?", (rid,))
-    conn.commit()
-    conn.close()
-
+# Delete reminder
+async def apagar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        jobs = context.application.job_queue.get_jobs_by_tag(rid)
-        if jobs:
-            jobs[0].schedule_removal()
+        index = int(update.message.text.split(" ")[1]) - 1
     except:
-        pass
+        await update.message.reply_text("Use: /apagar <número do lembrete>")
+        return
 
-    await update.message.reply_text(f"❌ Reminder {rid} removed.")
+    reminders = user_reminders.get(update.effective_user.id, [])
+
+    if index < 0 or index >= len(reminders):
+        await update.message.reply_text("Número inválido.")
+        return
+
+    removed = reminders.pop(index)
+
+    await update.message.reply_text(f"❌ Lembrete removido: {removed['text']}")
 
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "💡 *Examples:*\n"
-        "\"Remind me to water the plants tomorrow at 9:00\"\n"
-        "\"Every Friday at 18:30 remind me to take out the trash\"\n"
-    )
-
-
+# Main
 async def main():
-    init_db()
-
     app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, parse_message))
-    app.add_handler(CommandHandler("list", list_cmd))
-    app.add_handler(CommandHandler("cancel", cancel_cmd))
-    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("lembre", lembre))
+    app.add_handler(CommandHandler("listar", list_reminders))
+    app.add_handler(CommandHandler("apagar", apagar))
+
+    asyncio.create_task(reminder_checker())
 
     await app.run_polling()
 
