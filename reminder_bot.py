@@ -144,7 +144,6 @@ async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not reminders:
         await update.message.reply_text("Você não tem lembretes salvos.")
 
-
     msg = "📋 *Here are your current reminders:*"
     for i, r in enumerate(reminders, 1):
         msg += f"\n{i}. ⏰ {r['text']} — `{r['when'].strftime('%d/%m/%Y %H:%M')}`"
